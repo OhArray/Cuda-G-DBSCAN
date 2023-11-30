@@ -25,6 +25,10 @@ __global__ void makeGraph1(Point *points, int *numNeighbors, int numPoints, int 
 
     if (tid < numPoints) {
         for (int i = 0; i < numPoints; ++i) {
+            if (i == tid) {
+                continue;  // Skip the point itself
+            }
+
             if (distance(points[tid], points[i]) <= eps )
                 numNeighbors[tid]++;
         }
@@ -72,9 +76,9 @@ int* makeGraph(Point *c_points, int eps, int minPts, int *c_numNeighbors, int* c
 
     h_startPos[0] = 0;
     for (int i = 1; i < numPoints; i++) {
-        h_startPos[i] = h_startPos[i - 1] + h_numNeighbors[i - 1] - 1;
+        h_startPos[i] = h_startPos[i - 1] + h_numNeighbors[i - 1];
     }
-    int adjCount = h_startPos[numPoints - 1]  + h_numNeighbors[numPoints - 1] - 1;
+    int adjCount = h_startPos[numPoints - 1]  + h_numNeighbors[numPoints - 1];
 
     cudaMalloc(&c_adjList, adjCount *sizeof(int)); 
     int *h_adjList = (int*)malloc(adjCount*sizeof(int)); //do not need 
@@ -94,22 +98,22 @@ __global__ void GPU_BFS_Kernel(int *startPos, int *adjList, int *numNeighbors, b
     int tid = threadIdx.x + blockIdx.x * blockDim.x;
 
     if (tid < numPoints) {
-        if (Fa[tid]) {
+        if (Fa[tid] == 1) {
             Fa[tid] = 0;
             Xa[tid] = 1;
 
             int startId = startPos[tid];
 
-            for (int i = 0; i < numNeighbors[tid] - 1; ++i) {
+            for (int i = 0; i < numNeighbors[tid]; ++i) {
                 int nid = adjList[startId + i];
-                if(!Xa[nid])
+                if(Xa[nid] == 0)
                     Fa[nid] = 1;
             }
         }
     }
 }
 
-void CPU_BFS(Point *h_points, int *c_startPos, int *c_adjList, int *c_numNeighbors, int v, int curCluster, int numPoints) {
+void CPU_BFS(Point *h_points, int *c_startPos, int *c_adjList, int *c_numNeighbors, int v, int clust, int numPoints) {
 
     bool *c_Xa, *c_Fa;
 
@@ -119,35 +123,34 @@ void CPU_BFS(Point *h_points, int *c_startPos, int *c_adjList, int *c_numNeighbo
     bool *h_Xa = (bool*)malloc(numPoints*sizeof(bool));
     bool *h_Fa = (bool*)malloc(numPoints*sizeof(bool));
 
-    memset(h_Xa, false, numPoints * sizeof(bool));
-    memset(h_Fa, false, numPoints * sizeof(bool));
+    memset(h_Xa, 0, numPoints * sizeof(bool));
+    memset(h_Fa, 0, numPoints * sizeof(bool));
 
     cudaMemcpy(c_Xa, h_Xa, numPoints*sizeof(bool), cudaMemcpyHostToDevice);
 
     // Put node v in the frontier
-    h_Fa[v] = true;
+    h_Fa[v] = 1;
 
     int T = 64;
     int B = (numPoints + T - 1)/ T;
 
     // While F has some node with a value of true
 
-    while (std::any_of(h_Fa, h_Fa + numPoints,[](bool condition) { return condition; })) {
+    while (std::any_of(h_Fa, h_Fa + numPoints, thrust::identity<bool>())) {
         cudaMemcpy(c_Fa, h_Fa, numPoints*sizeof(bool), cudaMemcpyHostToDevice);
         
         GPU_BFS_Kernel <<<T, B>>> (c_startPos, c_adjList, c_numNeighbors, c_Fa, c_Xa, numPoints);
         cudaDeviceSynchronize();
 
         cudaMemcpy(h_Fa, c_Fa, numPoints*sizeof(bool), cudaMemcpyDeviceToHost);
-
     }
 
     cudaMemcpy(h_Xa, c_Xa, numPoints*sizeof(bool), cudaMemcpyDeviceToHost);
 
     // Label nodes
     for (int n = 0; n < numPoints; ++n) {
-        if (h_Xa[n]) {
-            h_points[n].clusterId = curCluster;
+        if (h_Xa[n] == 1) {
+            h_points[n].clusterId = clust;
             h_points[n].visited = 1;
             if (h_points[n].type != CORE) 
                 h_points[n].type = BORDER;
@@ -165,9 +168,9 @@ void CPU_BFS(Point *h_points, int *c_startPos, int *c_adjList, int *c_numNeighbo
 void IdentifyClusters(Point *h_points, int *startPos, int *adjList, int *numNeighbors, int numPoints) {
     int clusterId = 0;
     for (int i = 0; i < numPoints; ++i) {
-        if (h_points[i].visited == false && h_points[i].type == CORE) {
+        if (h_points[i].visited == 0 && h_points[i].type == CORE) {
+            h_points[i].visited = 1;
             h_points[i].clusterId = clusterId;
-            h_points[i].visited = true;
             CPU_BFS(h_points, startPos, adjList, numNeighbors, i, clusterId, numPoints);
             clusterId++;
         }
@@ -230,13 +233,13 @@ void writeClustersToFile(const char* filename, const struct Point* points, int n
     fclose(file);
 }
 
-int main() {
+int main(int argc, char *argv[]) {
 
     const char *filename = "output.txt";
     const char *outputFilename = "output_clusters.csv";
 
-    int eps = 5.5; //5
-    int minPts = 4; //1
+    int eps = atoi(argv[1]); //5
+    int minPts = atoi(argv[2]); //1
     int numPoints;
 
     Point *c_points;
