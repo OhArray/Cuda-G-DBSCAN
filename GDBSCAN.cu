@@ -16,10 +16,10 @@ struct Point {
 #define CORE 1
 
 __device__ float distance(Point p1, Point p2) {
-    return  sqrtf(powf(p1.x - p2.x, 2) + powf(p1.y - p2.y, 2));
+    return   hypotf(p1.x - p2.x, p1.y - p2.y);
 }
 
-__global__ void makeGraph1(Point *points, int *numNeighbors, int numPoints, int eps) {
+__global__ void makeGraph1(Point *points, int *numNeighbors, int numPoints, float eps) {
 
     int tid = threadIdx.x + blockIdx.x * blockDim.x;
 
@@ -28,14 +28,13 @@ __global__ void makeGraph1(Point *points, int *numNeighbors, int numPoints, int 
             if (i == tid) {
                 continue;  // Skip the point itself
             }
-
             if (distance(points[tid], points[i]) <= eps )
                 numNeighbors[tid]++;
         }
     }
 }
 
-__global__ void makeGraph2(Point *points, int *adjList, int *startPos, int numPoints, int eps, int minPts) {
+__global__ void makeGraph2(Point *points, int *adjList, int *startPos, int numPoints, float eps, int minPts) {
 
     int tid = threadIdx.x + blockIdx.x * blockDim.x;
 
@@ -53,14 +52,14 @@ __global__ void makeGraph2(Point *points, int *adjList, int *startPos, int numPo
                 numNeighbors++;
             }
         }
-        if (numNeighbors > minPts)
+        if (numNeighbors + 1 > minPts)
             points[tid].type = CORE;
         else
             points[tid].type = NOISE;
     }
 }
 
-int* makeGraph(Point *c_points, int eps, int minPts, int *c_numNeighbors, int* c_startPos, int numPoints) {
+int* makeGraph(Point *c_points, float eps, int minPts, int *c_numNeighbors, int* c_startPos, int numPoints) {
 
     int T = 64;
     int B = (numPoints + T - 1)/ T;
@@ -71,6 +70,7 @@ int* makeGraph(Point *c_points, int eps, int minPts, int *c_numNeighbors, int* c
     int *h_startPos = (int*)malloc(numPoints*sizeof(int));
 
     makeGraph1 <<<T,  B>>> (c_points, c_numNeighbors, numPoints, eps);
+    cudaDeviceSynchronize();
 
     cudaMemcpy(h_numNeighbors, c_numNeighbors, numPoints * sizeof(int), cudaMemcpyDeviceToHost);
 
@@ -81,16 +81,13 @@ int* makeGraph(Point *c_points, int eps, int minPts, int *c_numNeighbors, int* c
     int adjCount = h_startPos[numPoints - 1]  + h_numNeighbors[numPoints - 1];
 
     cudaMalloc(&c_adjList, adjCount *sizeof(int)); 
-    int *h_adjList = (int*)malloc(adjCount*sizeof(int)); //do not need 
 
     cudaMemcpy(c_startPos, h_startPos, numPoints * sizeof(int), cudaMemcpyHostToDevice);
 
     makeGraph2 <<<T, B>>> (c_points, c_adjList, c_startPos, numPoints, eps, minPts);
-
-    cudaMemcpy(h_adjList, c_adjList, adjCount * sizeof(int), cudaMemcpyDeviceToHost); //do not need
+    cudaDeviceSynchronize();
 
     return c_adjList;
-
 }
 
 __global__ void GPU_BFS_Kernel(int *startPos, int *adjList, int *numNeighbors, bool *Fa, bool *Xa, int numPoints) {
@@ -237,13 +234,12 @@ void writeClustersToFile(const char* filename, const struct Point* points, int n
 #include <stdlib.h>
 #include <cuda_runtime.h>
 
-// ... (rest of your code)
 
 int main(int argc, char *argv[]) {
     const char *filename = "output.txt";
     const char *outputFilename = "output_clusters.csv";
 
-    int eps = atoi(argv[1]); //5
+    float eps = atof(argv[1]); //5
     int minPts = atoi(argv[2]); //1
     int numPoints;
 
@@ -266,6 +262,7 @@ int main(int argc, char *argv[]) {
     cudaEventRecord(start);
 
     int *c_adjList = makeGraph(c_points, eps, minPts, c_numNeighbors, c_startPos, numPoints);
+    cudaMemcpy(h_points, c_points, numPoints * sizeof(Point), cudaMemcpyDeviceToHost);
     IdentifyClusters(h_points, c_startPos, c_adjList, c_numNeighbors, numPoints);
 
     cudaEventRecord(stop);
