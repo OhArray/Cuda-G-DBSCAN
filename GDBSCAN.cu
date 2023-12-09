@@ -19,7 +19,7 @@ struct Point {
 #define CORE 1
 
 __device__ float distance(Point p1, Point p2) {
-    return   hypotf(p1.x - p2.x, p1.y - p2.y);
+    return hypotf(p1.x - p2.x, p1.y - p2.y);
 }
 
 __global__ void makeGraph1(Point *points, int *numNeighbors, int numPoints, float eps) {
@@ -142,6 +142,7 @@ void CPU_BFS(Point *h_points, int *c_startPos, int *c_adjList, int *c_numNeighbo
     }
 }
 
+
 void IdentifyClusters(Point *h_points, int *startPos, int *adjList, int *numNeighbors, int numPoints) {
     bool *c_Xa, *c_Fa;
 
@@ -167,6 +168,7 @@ void IdentifyClusters(Point *h_points, int *startPos, int *adjList, int *numNeig
     free(h_Fa);
 }
 
+// Function to read points from a file
 struct Point* readPointsFromFile(const char* filename, int* numPoints) {
     FILE* file = fopen(filename, "r");
     if (file == NULL) {
@@ -177,11 +179,10 @@ struct Point* readPointsFromFile(const char* filename, int* numPoints) {
 
     struct Point* points = NULL;
     float x, y;
-    int ignoredValue;
 
     // Count the number of lines in the file
     *numPoints = 0;
-    while (fscanf(file, "%f %f %d", &x, &y, &ignoredValue) == 3) {
+    while (fscanf(file, "%f %f", &x, &y) == 2) {
         (*numPoints)++;
     }
 
@@ -190,14 +191,25 @@ struct Point* readPointsFromFile(const char* filename, int* numPoints) {
 
     // Allocate memory for the points
     points = (struct Point*)malloc(*numPoints * sizeof(struct Point));
+    if (points == NULL) {
+        fprintf(stderr, "Error allocating memory.\n");
+        fclose(file);
+        return NULL;
+    }
 
     // Read points from the file
     for (int i = 0; i < *numPoints; ++i) {
-        fscanf(file, "%f %f %d", &x, &y, &ignoredValue);
+        if (fscanf(file, "%f %f", &x, &y) != 2) {
+            fprintf(stderr, "Error reading points from the file.\n");
+            free(points); // Free allocated memory
+            fclose(file);
+            return NULL;
+        }
 
+        // Assign values to the struct members
         points[i].x = x;
         points[i].y = y;
-        points[i].visited = 0; // false
+        points[i].visited = 0;    // false
         points[i].clusterId = -1;
         points[i].type = -1;
     }
@@ -224,7 +236,13 @@ void writeClustersToFile(const char* filename, const struct Point* points, int n
 }
 
 int main(int argc, char *argv[]) {
-    const char *filename = "output.txt";
+
+    if (argc < 4) {
+        printf("Usage: %s <eps> <minPts> <filename>\n", argv[0]);
+        return 1;
+    }
+
+    const char *filename = argv[3];
     const char *outputFilename = "output_clusters.csv";
 
     float eps = atof(argv[1]); //5
