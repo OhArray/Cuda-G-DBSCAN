@@ -3,6 +3,9 @@
 #include <thrust/execution_policy.h>
 #include <cuda.h>
 #include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <cuda_runtime.h>
 
 struct Point {
     float x, y;
@@ -70,7 +73,6 @@ int* makeGraph(Point *c_points, float eps, int minPts, int *c_numNeighbors, int*
     int *h_startPos = (int*)malloc(numPoints*sizeof(int));
 
     makeGraph1 <<<T,  B>>> (c_points, c_numNeighbors, numPoints, eps);
-    cudaDeviceSynchronize();
 
     cudaMemcpy(h_numNeighbors, c_numNeighbors, numPoints * sizeof(int), cudaMemcpyDeviceToHost);
 
@@ -85,7 +87,6 @@ int* makeGraph(Point *c_points, float eps, int minPts, int *c_numNeighbors, int*
     cudaMemcpy(c_startPos, h_startPos, numPoints * sizeof(int), cudaMemcpyHostToDevice);
 
     makeGraph2 <<<T, B>>> (c_points, c_adjList, c_startPos, numPoints, eps, minPts);
-    cudaDeviceSynchronize();
 
     return c_adjList;
 }
@@ -110,35 +111,21 @@ __global__ void GPU_BFS_Kernel(int *startPos, int *adjList, int *numNeighbors, b
     }
 }
 
-void CPU_BFS(Point *h_points, int *c_startPos, int *c_adjList, int *c_numNeighbors, int v, int clust, int numPoints) {
+void CPU_BFS(Point *h_points, int *c_startPos, int *c_adjList, int *c_numNeighbors, bool *h_Xa, bool *c_Xa, bool *h_Fa, bool *c_Fa, int v, int clust, int numPoints) {
 
-    bool *c_Xa, *c_Fa;
-
-    cudaMalloc(&c_Xa, numPoints*sizeof(bool));
-    cudaMalloc(&c_Fa, numPoints*sizeof(bool));
-
-    bool *h_Xa = (bool*)malloc(numPoints*sizeof(bool));
-    bool *h_Fa = (bool*)malloc(numPoints*sizeof(bool));
-
-    memset(h_Xa, 0, numPoints * sizeof(bool));
     memset(h_Fa, 0, numPoints * sizeof(bool));
 
-    cudaMemcpy(c_Xa, h_Xa, numPoints*sizeof(bool), cudaMemcpyHostToDevice);
+    cudaMemset(c_Xa, 0, numPoints*sizeof(bool));
 
     // Put node v in the frontier
     h_Fa[v] = 1;
 
-    int T = 64;
+    int T = 128;
     int B = (numPoints + T - 1)/ T;
-
-    // While F has some node with a value of true
 
     while (std::any_of(h_Fa, h_Fa + numPoints, thrust::identity<bool>())) {
         cudaMemcpy(c_Fa, h_Fa, numPoints*sizeof(bool), cudaMemcpyHostToDevice);
-        
         GPU_BFS_Kernel <<<T, B>>> (c_startPos, c_adjList, c_numNeighbors, c_Fa, c_Xa, numPoints);
-        cudaDeviceSynchronize();
-
         cudaMemcpy(h_Fa, c_Fa, numPoints*sizeof(bool), cudaMemcpyDeviceToHost);
     }
 
@@ -153,25 +140,31 @@ void CPU_BFS(Point *h_points, int *c_startPos, int *c_adjList, int *c_numNeighbo
                 h_points[n].type = BORDER;
         }
     }
-
-    // Free memory
-    cudaFree(c_Xa);
-    cudaFree(c_Fa);
-    free(h_Xa);
-    free(h_Fa);
 }
 
-
 void IdentifyClusters(Point *h_points, int *startPos, int *adjList, int *numNeighbors, int numPoints) {
+    bool *c_Xa, *c_Fa;
+
+    cudaMalloc(&c_Xa, numPoints*sizeof(bool));
+    cudaMalloc(&c_Fa, numPoints*sizeof(bool));
+
+    bool *h_Xa = (bool*)malloc(numPoints*sizeof(bool));
+    bool *h_Fa = (bool*)malloc(numPoints*sizeof(bool));
+
     int clusterId = 0;
     for (int i = 0; i < numPoints; ++i) {
         if (h_points[i].visited == 0 && h_points[i].type == CORE) {
             h_points[i].visited = 1;
             h_points[i].clusterId = clusterId;
-            CPU_BFS(h_points, startPos, adjList, numNeighbors, i, clusterId, numPoints);
+            CPU_BFS(h_points, startPos, adjList, numNeighbors, h_Xa, c_Xa, h_Fa, c_Fa, i, clusterId, numPoints);
             clusterId++;
         }
     }
+
+    cudaFree(c_Xa);
+    cudaFree(c_Fa);
+    free(h_Xa);
+    free(h_Fa);
 }
 
 struct Point* readPointsFromFile(const char* filename, int* numPoints) {
@@ -229,11 +222,6 @@ void writeClustersToFile(const char* filename, const struct Point* points, int n
 
     fclose(file);
 }
-
-#include <stdio.h>
-#include <stdlib.h>
-#include <cuda_runtime.h>
-
 
 int main(int argc, char *argv[]) {
     const char *filename = "output.txt";
